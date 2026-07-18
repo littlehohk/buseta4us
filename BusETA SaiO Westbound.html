@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Bus ETA SaiO Westbound</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --card: #16191d;
+    --card-border: #23272c;
+    --text: #f2f3f5;
+    --sub: #9aa0a6;
+    --accent: #ffcc00;
+    --urgent: #ff5a4e;
+    --soon: #ffcc00;
+    --ok: #4cd97b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 24px);
+    min-height: 100vh;
+  }
+  header {
+    padding: 20px 4px 12px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  h1 { font-size: 22px; margin: 0; font-weight: 700; }
+  #updated { font-size: 12px; color: var(--sub); }
+  .refresh-btn {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 14px;
+    margin-top: 10px;
+    width: 100%;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .route-wrap { display: flex; align-items: center; gap: 8px; }
+  .route {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--accent);
+  }
+  .badge {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--bg);
+    background: var(--sub);
+    padding: 2px 6px;
+    border-radius: 6px;
+    letter-spacing: 0.5px;
+  }
+  .badge.kmb { background: #e2231a; color: #fff; }
+  .badge.ctb { background: #ffcb05; color: #111; }
+  .dest {
+    font-size: 13px;
+    color: var(--sub);
+    text-align: right;
+    max-width: 60%;
+  }
+  .etas {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .eta-pill {
+    background: #1e2227;
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 15px;
+    font-weight: 600;
+    min-width: 54px;
+    text-align: center;
+  }
+  .eta-pill span { display: block; font-size: 10px; font-weight: 400; color: var(--sub); }
+  .urgent { color: var(--urgent); }
+  .soon { color: var(--soon); }
+  .ok { color: var(--ok); }
+  .error { color: var(--urgent); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🚌 Bus ETA SaiO Westbound</h1>
+</header>
+<div id="updated">Loading…</div>
+<button class="refresh-btn" onclick="loadAll()">Refresh now</button>
+<div id="cards" style="margin-top:14px;"></div>
+
+<script>
+const ROUTES = [
+  { route: "299X", operator: "kmb", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/5D86C919F15C0611/299X/1" },
+  { route: "99",   operator: "kmb", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/5D86C919F15C0611/99/1" },
+  { route: "287",  operator: "kmb", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/5D86C919F15C0611/287/1" },
+  { route: "580",  operator: "ctb", url: "https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/003834/580" },
+  { route: "581",  operator: "ctb", url: "https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/003834/581" },
+  { route: "582",  operator: "ctb", url: "https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/003834/582" },
+];
+
+function minutesUntil(isoString) {
+  const diffMs = new Date(isoString).getTime() - Date.now();
+  return Math.max(0, Math.round(diffMs / 60000));
+}
+
+function urgencyClass(mins) {
+  if (mins <= 3) return "urgent";
+  if (mins <= 8) return "soon";
+  return "ok";
+}
+
+async function fetchRoute(r) {
+  try {
+    const res = await fetch(r.url, { cache: "no-store" });
+    const json = await res.json();
+    const data = (json.data || []).filter(d => d.eta);
+    return { ...r, data, error: null };
+  } catch (e) {
+    return { ...r, data: [], error: "Couldn't load" };
+  }
+}
+
+async function loadAll() {
+  document.getElementById("updated").textContent = "Updating…";
+  const results = await Promise.all(ROUTES.map(fetchRoute));
+  render(results);
+  document.getElementById("updated").textContent =
+    "Updated " + new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function render(results) {
+  const container = document.getElementById("cards");
+  container.innerHTML = results.map(r => {
+    const badge = `<span class="badge ${r.operator}">${r.operator === "kmb" ? "KMB" : "CTB"}</span>`;
+    if (r.error) {
+      return `<div class="card"><div class="card-top"><div class="route-wrap"><div class="route">${r.route}</div>${badge}</div></div><div class="error">${r.error}</div></div>`;
+    }
+    if (!r.data.length) {
+      return `<div class="card"><div class="card-top"><div class="route-wrap"><div class="route">${r.route}</div>${badge}</div></div><div class="error">No buses currently in service</div></div>`;
+    }
+    const dest = r.data[0].dest_en || "";
+    const pills = r.data.slice(0, 3).map(d => {
+      const mins = minutesUntil(d.eta);
+      const cls = urgencyClass(mins);
+      const label = mins === 0 ? "Due" : mins + " min";
+      return `<div class="eta-pill ${cls}">${label}<span>${new Date(d.eta).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</span></div>`;
+    }).join("");
+    return `<div class="card">
+      <div class="card-top">
+        <div class="route-wrap"><div class="route">${r.route}</div>${badge}</div>
+        <div class="dest">${dest}</div>
+      </div>
+      <div class="etas">${pills}</div>
+    </div>`;
+  }).join("");
+}
+
+loadAll();
+setInterval(loadAll, 30000); // auto-refresh every 30s
+</script>
+</body>
+</html>
