@@ -34,6 +34,30 @@
     justify-content: space-between;
   }
   h1 { font-size: 22px; margin: 0; font-weight: 700; }
+  .status-line {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-size: 20px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.5px;
+    color: var(--text);
+    padding: 2px 4px 14px;
+    flex-wrap: wrap;
+  }
+  .status-line .temp { color: var(--accent); }
+  .status-line .sep { color: var(--sub); font-weight: 400; }
+  .status-line .warn-tag {
+    font-size: 14px;
+    font-weight: 800;
+    padding: 3px 8px;
+    border-radius: 6px;
+    letter-spacing: 0.3px;
+  }
+  .status-line .warn-icon { height: 26px; width: auto; display: block; }
+  .status-line .warn-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #updated { font-size: 18px; color: var(--sub); }
   .refresh-btn {
     background: var(--card);
@@ -94,6 +118,13 @@
 <header>
   <h1>🚌 Bus ETA Chevalier Garden Bus Terminal Westbound</h1>
 </header>
+<div class="status-line" id="statusLine">
+  <span id="clock">--:--:--</span>
+  <span class="sep">·</span>
+  <span id="temp" class="temp">--°</span>
+  <span class="sep warn-sep" id="warnSep" style="display:none;">·</span>
+  <span class="warn-tags" id="warnTags"></span>
+</div>
 <div id="updated">Loading…</div>
 <button class="refresh-btn" onclick="loadAll()">Refresh now</button>
 <div id="cards" style="margin-top:14px;"></div>
@@ -165,6 +196,129 @@ function render(results) {
 
 loadAll();
 setInterval(loadAll, 30000); // auto-refresh every 30s
+
+// --- Clock: Hong Kong time, 12-hour format, digits and signs only ---
+function updateClock() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Hong_Kong",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).formatToParts(new Date());
+  const get = (t) => parts.find(p => p.type === t).value;
+  let h = parseInt(get("hour"), 10) % 12;
+  if (h === 0) h = 12;
+  const hh = String(h).padStart(2, "0");
+  document.getElementById("clock").textContent = `${hh}:${get("minute")}:${get("second")}`;
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// --- Temperature (Sha Tin) ---
+async function updateTemperature() {
+  try {
+    const res = await fetch("https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en", { cache: "no-store" });
+    const json = await res.json();
+    const entry = (json.temperature && json.temperature.data || []).find(d => d.place === "Sha Tin");
+    document.getElementById("temp").textContent = entry ? `${entry.value}°${entry.unit}` : "--°";
+  } catch (e) {
+    console.error("Temperature fetch failed", e);
+  }
+}
+
+// --- Active warning signals: try HKO's real icons, fall back to a colour-matched text badge ---
+const WARNING_LABELS = {
+  WFIREY: "Fire Y", WFIRER: "Fire R",
+  WFROST: "Frost",
+  WHOT: "Hot",
+  WCOLD: "Cold",
+  WMSGNL: "Monsoon",
+  WRAINA: "Rain A", WRAINR: "Rain R", WRAINB: "Rain B",
+  WFNTSA: "Flood NT",
+  WL: "Landslip",
+  TC1: "T1", TC3: "T3", TC8NE: "T8 NE", TC8SE: "T8 SE", TC8NW: "T8 NW", TC8SW: "T8 SW", TC9: "T9", TC10: "T10",
+  WTMW: "Tsunami",
+  WTS: "Thunder",
+};
+
+// Filenames as used at https://www.hko.gov.hk/en/wxinfo/dailywx/warnlegend.htm
+const WARNING_ICON_BASE = "https://www.hko.gov.hk/en/wxinfo/dailywx/images/";
+const WARNING_ICON_FILES = {
+  WFIREY: "firey.gif", WFIRER: "firer.gif",
+  WFROST: "frost.gif",
+  WHOT: "vhot.gif",
+  WCOLD: "cold.gif",
+  WMSGNL: "sms.gif",
+  WRAINA: "raina.gif", WRAINR: "rainr.gif", WRAINB: "rainb.gif",
+  WFNTSA: "ntfl.gif",
+  WL: "landslip.gif",
+  TC1: "tc1.gif", TC3: "tc3.gif",
+  TC8NE: "tc8ne.gif", TC8SE: "tc8b.gif", TC8SW: "tc8c.gif", TC8NW: "tc8d.gif",
+  TC9: "tc9.gif", TC10: "tc10.gif",
+  WTMW: "tsunami-warn.gif",
+  WTS: "ts.gif",
+};
+
+// Fallback badge colours, matched to each signal's real-world colour (per HKO convention)
+const WARNING_COLORS = {
+  WFIREY: { bg: "#ffcc00", fg: "#1a1400" }, WFIRER: { bg: "#e2231a", fg: "#fff" },
+  WFROST: { bg: "#8fd6ff", fg: "#00263d" },
+  WHOT:   { bg: "#ff7a1a", fg: "#2b0e00" },
+  WCOLD:  { bg: "#3b7dd8", fg: "#fff" },
+  WMSGNL: { bg: "#2e9e8f", fg: "#fff" },
+  WRAINA: { bg: "#ffbf00", fg: "#1a1400" },
+  WRAINR: { bg: "#e2231a", fg: "#fff" },
+  WRAINB: { bg: "#000000", fg: "#fff" },
+  WFNTSA: { bg: "#3b7dd8", fg: "#fff" },
+  WL:     { bg: "#8a5a2b", fg: "#fff" },
+  TC1: { bg: "#000000", fg: "#fff" }, TC3: { bg: "#000000", fg: "#fff" },
+  TC8NE: { bg: "#000000", fg: "#fff" }, TC8SE: { bg: "#000000", fg: "#fff" },
+  TC8SW: { bg: "#000000", fg: "#fff" }, TC8NW: { bg: "#000000", fg: "#fff" },
+  TC9: { bg: "#000000", fg: "#fff" }, TC10: { bg: "#000000", fg: "#fff" },
+  WTMW: { bg: "#7a3bd8", fg: "#fff" },
+  WTS:  { bg: "#ffcc00", fg: "#1a1400" },
+};
+
+function warnFallbackHTML(code) {
+  const label = WARNING_LABELS[code] || code;
+  const c = WARNING_COLORS[code] || { bg: "var(--sub)", fg: "#000" };
+  return `<span class="warn-tag" style="background:${c.bg};color:${c.fg};">${label}</span>`;
+}
+
+function handleWarnIconError(imgEl, code) {
+  imgEl.outerHTML = warnFallbackHTML(code);
+}
+
+function warnIconHTML(code) {
+  const file = WARNING_ICON_FILES[code];
+  if (!file) return warnFallbackHTML(code);
+  return `<img class="warn-icon" src="${WARNING_ICON_BASE}${file}" alt="${code}" onerror="handleWarnIconError(this, '${code}')">`;
+}
+
+async function updateWarnings() {
+  try {
+    const res = await fetch("https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=en", { cache: "no-store" });
+    const json = await res.json();
+    const active = Object.values(json).filter(w => w && w.code && w.actionCode !== "CANCEL");
+    const tagsEl = document.getElementById("warnTags");
+    const sepEl = document.getElementById("warnSep");
+    if (active.length) {
+      tagsEl.innerHTML = active.map(w => warnIconHTML(w.code)).join("");
+      sepEl.style.display = "";
+    } else {
+      tagsEl.innerHTML = "";
+      sepEl.style.display = "none";
+    }
+  } catch (e) {
+    console.error("Warning signal fetch failed", e);
+  }
+}
+
+updateTemperature();
+updateWarnings();
+setInterval(updateTemperature, 5 * 60 * 1000);
+setInterval(updateWarnings, 5 * 60 * 1000);
 </script>
 </body>
 </html>
