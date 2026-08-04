@@ -226,8 +226,7 @@ function updateClock() {
   const get = (t) => parts.find(p => p.type === t).value;
   let h = parseInt(get("hour"), 10) % 12;
   if (h === 0) h = 12;
-  const hh = String(h).padStart(2, "0");
-  document.getElementById("clock").textContent = `${hh}:${get("minute")}:${get("second")}`;
+  document.getElementById("clock").textContent = `${h}:${get("minute")}:${get("second")}`;
 }
 updateClock();
 setInterval(updateClock, 1000);
