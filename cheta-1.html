@@ -59,6 +59,12 @@
   .status-line .warn-icon { height: 26px; width: auto; display: block; }
   .status-line .warn-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #updated { font-size: 18px; color: var(--sub); }
+  .updated-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
   .refresh-btn {
     background: var(--card);
     border: 1px solid var(--card-border);
@@ -66,8 +72,7 @@
     border-radius: 10px;
     padding: 8px 14px;
     font-size: 16px;
-    margin-top: 10px;
-    width: 100%;
+    flex-shrink: 0;
   }
   .card {
     background: var(--card);
@@ -125,8 +130,10 @@
   <span class="sep warn-sep" id="warnSep" style="display:none;">·</span>
   <span class="warn-tags" id="warnTags"></span>
 </div>
-<div id="updated">Loading…</div>
-<button class="refresh-btn" onclick="loadAll()">Refresh now</button>
+<div class="updated-row">
+  <div id="updated">Loading…</div>
+  <button class="refresh-btn" onclick="loadAll()">Refresh now</button>
+</div>
 <div id="cards" style="margin-top:14px;"></div>
 
 <script>
@@ -297,15 +304,42 @@ function warnIconHTML(code) {
   return `<img class="warn-icon" src="${WARNING_ICON_BASE}${file}" alt="${code}" onerror="handleWarnIconError(this, '${code}')">`;
 }
 
+// Heat Stress at Work Warning (issued by Labour Department, separate feed — no official small icon, always shown as a text badge)
+const HSWW_STYLE = {
+  AMBER: { bg: "#ffcc00", fg: "#000000", label: "Work" },
+  RED:   { bg: "#e2231a", fg: "#ffffff", label: "Work" },
+  BLACK: { bg: "#000000", fg: "#ffffff", label: "Work" },
+};
+
+async function fetchWarnsumTags() {
+  const res = await fetch("https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=en", { cache: "no-store" });
+  const json = await res.json();
+  const active = Object.values(json).filter(w => w && w.code && w.actionCode !== "CANCEL");
+  return active.map(w => warnIconHTML(w.code));
+}
+
+async function fetchHswwTags() {
+  const res = await fetch("https://data.weather.gov.hk/weatherAPI/opendata/hsww.php?lang=en", { cache: "no-store" });
+  const json = await res.json();
+  // Don't assume the exact top-level key name (docs are inconsistent on this) —
+  // find whichever value looks like an HSWW record instead.
+  const hsww = Object.values(json).find(v => v && typeof v === "object" && v.warningLevel && v.actionCode);
+  if (!hsww || hsww.actionCode !== "ISSUE") return [];
+  const style = HSWW_STYLE[hsww.warningLevel] || { bg: "var(--sub)", fg: "#000", label: "Work" };
+  return [`<span class="warn-tag" style="background:${style.bg};color:${style.fg};">${style.label}</span>`];
+}
+
 async function updateWarnings() {
   try {
-    const res = await fetch("https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=en", { cache: "no-store" });
-    const json = await res.json();
-    const active = Object.values(json).filter(w => w && w.code && w.actionCode !== "CANCEL");
+    const [warnsumTags, hswwTags] = await Promise.all([
+      fetchWarnsumTags().catch(e => { console.error("warnsum fetch failed", e); return []; }),
+      fetchHswwTags().catch(e => { console.error("hsww fetch failed", e); return []; }),
+    ]);
+    const allTags = [...warnsumTags, ...hswwTags];
     const tagsEl = document.getElementById("warnTags");
     const sepEl = document.getElementById("warnSep");
-    if (active.length) {
-      tagsEl.innerHTML = active.map(w => warnIconHTML(w.code)).join("");
+    if (allTags.length) {
+      tagsEl.innerHTML = allTags.join("");
       sepEl.style.display = "";
     } else {
       tagsEl.innerHTML = "";
