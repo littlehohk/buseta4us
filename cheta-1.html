@@ -138,11 +138,12 @@
 
 <script>
 const ROUTES = [
+  { route: "299X", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/1CF4AE2F7045B848/299X/1" },
   { route: "85K", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/C81CBD93FB2B5C60/85K/1" },
   { route: "84M", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/36D7B643B6B5680A/84M/2" },
   { route: "81C", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/F508350699744D24/81C/1" },
   { route: "43X", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/D2C5873747260F13/43X/1" },
-  { route: "299X", url: "https://data.etabus.gov.hk/v1/transport/kmb/eta/1CF4AE2F7045B848/299X/1" },
+  { route: "806B", operator: "gmb", dest: "Wan Tau Tong", url: "https://data.etagmb.gov.hk/eta/route-stop/2001823/1/7" },
 ];
 
 function minutesUntil(isoString) {
@@ -156,47 +157,109 @@ function urgencyClass(mins) {
   return "ok";
 }
 
-async function fetchRoute(r) {
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch =>
+    ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
+}
+
+async function requestJSON(url, isGmb) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const res = await fetch(r.url, { cache: "no-store" });
-    const json = await res.json();
+    // GMB is a simple HTTPS GET; avoid custom headers/preflight and public proxies.
+    const res = await fetch(isGmb ? url + "?_=" + Date.now() : url,
+      isGmb ? { signal: controller.signal, credentials: "omit" }
+            : { signal: controller.signal, cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } finally { clearTimeout(timeout); }
+}
+
+function parseGmb(json, r) {
+  const stop = json?.data;
+  if (!stop || typeof stop.enabled !== "boolean") throw new Error("Unexpected GMB response");
+  if (!stop.enabled) return { data: [], message: stop.description_en || "ETA service temporarily unavailable" };
+  if (!Array.isArray(stop.eta)) throw new Error("Missing GMB ETA list");
+  const generated = Date.parse(json.generated_timestamp);
+  if (!Number.isFinite(generated)) throw new Error("Missing GMB response time");
+  // Use the API clock, so an incorrect device clock cannot reject valid ETAs.
+  const clockOffset = generated - Date.now();
+  if (stop.eta.some(e => !e || !Number.isFinite(Date.parse(e.timestamp)))) {
+    throw new Error("Invalid GMB arrival time");
+  }
+  return {
+    data: stop.eta
+      .filter(e => Date.parse(e.timestamp) >= generated - 60000)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+      .map(e => ({ eta: e.timestamp, dest_en: r.dest, clockOffset })),
+    message: "No ETA available at Chevalier Garden"
+  };
+}
+
+async function fetchRoute(r) {
+  const isGmb = r.operator === "gmb";
+  try {
+    let json;
+    try { json = await requestJSON(r.url, isGmb); }
+    catch (e) {
+      if (!isGmb) throw e;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      json = await requestJSON(r.url, true);
+    }
+    if (isGmb) return { ...r, ...parseGmb(json, r), error: null };
     const data = (json.data || []).filter(d => d.eta);
     return { ...r, data, error: null };
   } catch (e) {
-    return { ...r, data: [], error: "Couldn't load" };
+    console.error("ETA failed", r.route, e);
+    return { ...r, data: [], error: isGmb
+      ? "806B ETA unavailable: " + (e.name === "AbortError" ? "Request timed out" : e.message)
+      : "Couldn't load" };
   }
 }
 
+let loading = false;
+let latestResults = [];
 async function loadAll() {
+  if (loading) return;
+  loading = true;
   document.getElementById("updated").textContent = "Updating…";
-  const results = await Promise.all(ROUTES.map(fetchRoute));
-  render(results);
-  document.getElementById("updated").textContent =
-    "Updated " + new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  try {
+    if (!latestResults.length) latestResults = ROUTES.map(r => ({ ...r, data: [], message: "Loading…" }));
+    render(latestResults);
+    await Promise.all(ROUTES.map(async (r, index) => {
+      latestResults[index] = await fetchRoute(r);
+      render(latestResults);
+    }));
+    document.getElementById("updated").textContent =
+      (latestResults.some(r => r.error) ? "Checked " : "Updated ") + new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } finally { loading = false; }
 }
 
 function render(results) {
   const container = document.getElementById("cards");
   container.innerHTML = results.map(r => {
+    const isGmb = r.operator === "gmb";
+    const top = `<div class="card-top"><div class="route">${escapeHTML(r.route)}</div>${isGmb ? `<div class="dest">${escapeHTML(r.dest)}</div>` : ""}</div>`;
     if (r.error) {
-      return `<div class="card"><div class="card-top"><div class="route">${r.route}</div></div><div class="error">${r.error}</div></div>`;
+      return `<div class="card">${top}<div class="error">${escapeHTML(r.error)}</div></div>`;
     }
-    if (!r.data.length) {
-      return `<div class="card"><div class="card-top"><div class="route">${r.route}</div></div><div class="error">No buses currently in service</div></div>`;
+    const data = isGmb ? r.data.filter(d => Date.parse(d.eta) >= Date.now() + d.clockOffset - 60000) : r.data;
+    if (!data.length) {
+      return `<div class="card">${top}<div class="error">${escapeHTML(r.message || (isGmb ? "No ETA available at Chevalier Garden" : "No buses currently in service"))}</div></div>`;
     }
-    const dest = r.data[0].dest_en || "";
-    const pills = r.data.slice(0, 3).map(d => {
-      const rawMins = minutesUntil(d.eta);
+    const dest = r.dest || data[0].dest_en || "";
+    const pills = data.slice(0, 3).map(d => {
+      const rawMins = isGmb ? Math.max(0, Math.round((Date.parse(d.eta) - Date.now() - d.clockOffset) / 60000)) : minutesUntil(d.eta);
       // data.gov.hk's KMB feed tends to run ~1 min later than the official KMB app; adjust to match.
       const mins = (r.operator === "kmb" || !r.operator) ? Math.max(0, rawMins - 1) : rawMins;
       const cls = urgencyClass(mins);
       const label = mins === 0 ? "Due" : mins + " min";
-      return `<div class="eta-pill ${cls}">${label}<span>${new Date(d.eta).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</span></div>`;
+      return `<div class="eta-pill ${cls}">${label}<span>${new Date(d.eta).toLocaleTimeString("en-GB",{...(isGmb ? {timeZone:"Asia/Hong_Kong"} : {}),hour:"2-digit",minute:"2-digit"})}</span></div>`;
     }).join("");
     return `<div class="card">
       <div class="card-top">
         <div class="route">${r.route}</div>
-        <div class="dest">${dest}</div>
+        <div class="dest">${escapeHTML(dest)}</div>
       </div>
       <div class="etas">${pills}</div>
     </div>`;
@@ -205,6 +268,9 @@ function render(results) {
 
 loadAll();
 setInterval(loadAll, 30000); // auto-refresh every 30s
+setInterval(() => { if (latestResults.length) render(latestResults); }, 1000);
+window.addEventListener("online", loadAll);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAll(); });
 
 // --- Clock: Hong Kong time, 12-hour format, digits and signs only ---
 function updateClock() {
